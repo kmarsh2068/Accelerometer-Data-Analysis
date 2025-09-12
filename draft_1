@@ -1,0 +1,71 @@
+import csv
+import matplotlib.pyplot as plt
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import os
+
+def choose_file():
+    """Open a dialog to select a CSV file."""
+    root = tk.Tk()
+    root.withdraw() 
+    filename = filedialog.askopenfilename(
+        title="Select accelerometer CSV file",
+        filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+    )
+    root.destroy()
+    return filename
+
+def read_csv_data(filename):
+    """Read two-column CSV (time, accel)."""
+    times = []
+    accels = []
+    with open(filename, 'r') as f:
+        reader = csv.reader(f, skipinitialspace=True)
+        next(reader, None)
+        for row in reader:
+            if not row:
+                continue
+            try:
+                t = float(row[0])
+                a = float(row[1])
+                times.append(t)
+                accels.append(a)
+            except ValueError:
+                continue
+    return times, accels
+
+def plot_graph(times, accels, filename):
+    """Plot acceleration vs. time using matplotlib, title = filename without extension."""
+    plt.figure(figsize=(8, 5))
+    plt.plot(times, accels, label="Acceleration", color="blue")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Acceleration (m/s²)")
+
+    title_name = os.path.splitext(os.path.basename(filename))[0]
+    plt.title(f"Accelerometer Data: {title_name}")
+
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+
+def main_loop():
+    """Main loop: choose file, read data, plot graph."""
+    while True:
+        filename = choose_file()
+        if not filename: 
+            break
+
+        times, accels = read_csv_data(filename)
+        if times and accels:
+            plot_graph(times, accels, filename)
+        else:
+            messagebox.showerror("Error", "No valid data found in the file.")
+
+        again = messagebox.askyesno("Load another file?", "Do you want to load another CSV file?")
+        if not again:
+            break
+
+if __name__ == "__main__":
+    main_loop()
+
