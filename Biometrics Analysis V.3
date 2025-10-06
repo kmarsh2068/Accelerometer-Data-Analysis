@@ -1,0 +1,193 @@
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.signal import find_peaks
+import tkinter as tk
+from tkinter import filedialog
+
+def inspect_txt(file_path, n=10):
+    df = pd.read_csv(file_path, sep='\t')
+    print("\n[TXT INSPECTION]")
+    print("First few rows:")
+    print(df.head(n))
+    print("\nColumn names:")
+    print(df.columns.tolist())
+    return df
+
+def choose_file():
+    """Open a dialog to select a CSV or TXT file."""
+    root = tk.Tk()
+    root.withdraw()
+    filename = filedialog.askopenfilename(
+        title="Select accelerometer file",
+        filetypes=[
+            ("CSV and TXT Files", "*.csv *.txt"),
+            ("CSV Files", "*.csv"),
+            ("Text Files", "*.txt"),
+            ("All Files", "*.*"),
+        ]
+    )
+    root.destroy()
+    return filename
+
+def parse_wit_ble_txt(file_path):
+    df = pd.read_csv(file_path, sep='\t')
+    required_cols = ["time", "AccX(g)", "AccY(g)", "AccZ(g)"]
+    missing_cols = [c for c in required_cols if c not in df.columns]
+    if missing_cols:
+        print("Missing columns: {}".format(", ".join(missing_cols)))
+        return [], pd.DataFrame()
+
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    for col in ["AccX(g)", "AccY(g)", "AccZ(g)"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=required_cols)
+    if df.empty:
+        return [], pd.DataFrame()
+
+    start_time = df["time"].iloc[0]
+    times = (df["time"] - start_time).dt.total_seconds().tolist()
+    return times, df[["AccX(g)", "AccY(g)", "AccZ(g)"]]
+
+
+def read_csv_data(filename):
+    times = []
+    accels = []
+    with open(filename, 'r') as f:
+        reader = csv.reader(f, skipinitialspace=True)
+        next(reader, None)
+        for row in reader:
+            if not row:
+                continue
+            try:
+                t = float(row[0])
+                a = float(row[1])
+                times.append(t)
+                accels.append(a)
+            except ValueError:
+                continue
+    return times, accels
+
+def find_peaks_filtered(signal, prominence=0.25, distance=25, trim_start=0.05, trim_end=0.20):
+    n = len(signal)
+    start = int(n * trim_start)
+    end = int(n * (1 - trim_end))
+
+    segment = signal[start:end].reset_index(drop=True)
+
+    peaks, _ = find_peaks(segment, prominence=prominence, distance=distance)
+
+    peaks = [p + start for p in peaks]
+
+    return peaks, len(peaks)
+
+def compute_step_times(times, peaks):
+    if len(peaks) < 2:
+        return [], None
+    
+    intervals = [times[peaks[i+1]] - times[peaks[i]] for i in range(len(peaks)-1)]
+    avg_interval = sum(intervals) / len(intervals)
+    return intervals, avg_interval
+
+def plot_graph(times, accels, filename, peaks, total_peaks):
+    plt.figure(figsize=(8, 5))
+    plt.plot(times, accels, label="Acceleration", color="blue")
+    plt.plot([times[i] for i in peaks], [accels[i] for i in peaks], "ro", label="Peaks")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Acceleration (g)")
+    title_name = os.path.splitext(os.path.basename(filename))[0]
+    plt.title("Accelerometer Data: {}\nTotal Peaks: {}".format(title_name, total_peaks))
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+    
+def plot_three_axes(times, df, filename, trim_start=0.05, trim_end=0.20):
+    axes = ["AccX(g)", "AccY(g)", "AccZ(g)"]
+    colors = ["blue", "green", "red"]
+
+    plt.figure(figsize=(10, 6))
+    for col, color in zip(axes, colors):
+        if col not in df.columns:
+            continue
+        accels = df[col].reset_index(drop=True)
+        peaks, total_peaks = find_peaks_filtered(accels, trim_start=trim_start, trim_end=trim_end)
+
+        intervals, avg_interval = compute_step_times(times, peaks)
+
+        if avg_interval is not None:
+            print("Axis {}: {} steps".format(col, total_peaks))
+            print("Axis {}: Step intervals = {}".format(col, [round(x, 2) for x in intervals]))
+            print("Axis {}: Average step interval = {:.2f} s\n".format(col, avg_interval))
+            
+            plt.text(0.02, 0.9, "{} avg interval = {:.2f}s".format(col, avg_interval),
+                     transform=plt.gca().transAxes, color=color, fontsize=9)
+        else:
+            print("Axis {}: Not enough steps detected.\n".format(col))
+
+        plt.plot(times[:len(accels)], accels, label="{} (steps={})".format(col, total_peaks), color=color)
+        plt.plot([times[i] for i in peaks], [accels.iloc[i] for i in peaks], "o", color=color)
+
+        n = len(accels)
+        start = int(n * trim_start)
+        end = int(n * (1 - trim_end))
+        plt.axvspan(times[0], times[start], color=color, alpha=0.1) 
+        plt.axvspan(times[end], times[-1], color=color, alpha=0.1)
+
+    title_name = os.path.splitext(os.path.basename(filename))[0]
+    plt.title("Accelerometer Data (trimmed edges shaded): {}".format(title_name))
+    plt.xlabel("Time (s)")
+    plt.ylabel("Acceleration (g)")
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+def main_loop():
+    while True:
+        filename = choose_file()
+        if not filename:
+            break
+
+        ext = os.path.splitext(filename)[1].lower()
+        if ext == ".txt":
+            times, df_acc = parse_wit_ble_txt(filename)
+            if not df_acc.empty:
+                plot_three_axes(times, df_acc, filename)
+            else:
+                print("No valid data in TXT file.")
+
+        elif ext == ".csv":
+            df = pd.read_csv(filename)
+            if df.shape[1] >= 2:
+                times = df.iloc[:, 0].tolist()
+                accels = df.iloc[:, 1].reset_index(drop=True)
+                peaks, total_peaks = find_peaks_filtered(accels)
+
+                intervals, avg_interval = compute_step_times(times, peaks)
+
+                if avg_interval is not None:
+                    print("CSV: {} steps".format(total_peaks))
+                    print("Step intervals = {}".format([round(x, 2) for x in intervals]))
+                    print("Average step interval = {:.2f} s\n".format(avg_interval))
+                    title_extra = " | Avg interval = {:.2f}s".format(avg_interval)
+                else:
+                    print("Not enough steps detected in CSV.\n")
+                    title_extra = ""
+
+                plt.plot(times, accels, label="Signal")
+                plt.plot([times[i] for i in peaks], [accels.iloc[i] for i in peaks], "ro")
+                plt.title("CSV Data: {} (steps={}){}".format(os.path.basename(filename), total_peaks, title_extra))
+                plt.xlabel("Time (s)")
+                plt.ylabel("Acceleration (g)")
+                plt.legend()
+                plt.show()
+            else:
+                print("CSV file does not have enough columns")
+
+        again = input("Load another file? (y/n): ").strip().lower()
+        if again != "y":
+            break
+
+if __name__ == "__main__":
+    main_loop()
+
