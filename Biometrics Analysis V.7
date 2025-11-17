@@ -1,0 +1,190 @@
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.signal import find_peaks
+import tkinter as tk
+from tkinter import filedialog, simpledialog
+import numpy as np
+
+def choose_file():
+    root = tk.Tk()
+    root.withdraw()
+    filename = filedialog.askopenfilename(
+        title="Select accelerometer file",
+        filetypes=[("CSV and TXT Files", "*.csv *.txt")]
+    )
+    root.destroy()
+    return filename
+
+def parse_wit_ble_txt(file_path):
+    df = pd.read_csv(file_path, sep="\t")
+    required_cols = ["time", "AccX(g)", "AccY(g)", "AccZ(g)"]
+
+    if not all(c in df.columns for c in required_cols):
+        print("Missing one or more required columns")
+        return [], pd.DataFrame()
+
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    for col in ["AccX(g)", "AccY(g)", "AccZ(g)"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna()
+    if df.empty:
+        return [], pd.DataFrame()
+
+    times = (df["time"] - df["time"].iloc[0]).dt.total_seconds().tolist()
+    return times, df[["AccX(g)", "AccY(g)", "AccZ(g)"]]
+
+
+def read_csv_data(filename):
+    df = pd.read_csv(filename)
+    if df.shape[1] < 2:
+        return [], pd.DataFrame()
+
+    time_col = df.columns[0]
+    accel_col = df.columns[1]
+
+    df["time"] = pd.to_numeric(df[time_col], errors="coerce")
+    df["AccX(g)"] = pd.to_numeric(df[accel_col], errors="coerce")
+    df = df.dropna()
+
+    return df["time"].tolist(), df[["AccX(g)"]]
+
+def find_steps_bidirectional(z_signal,
+                             pos_prominence=0.30,
+                             neg_prominence=0.30,
+                             pos_distance=20,
+                             neg_distance=20,
+                             trim_start=0.05,
+                             trim_end=0.20):
+
+    n = len(z_signal)
+    start = int(n * trim_start)
+    end = int(n * (1 - trim_end))
+
+    segment = z_signal[start:end].reset_index(drop=True)
+
+    pos_rel, _ = find_peaks(segment,
+                            prominence=pos_prominence,
+                            distance=pos_distance)
+    pos_peaks = [p + start for p in pos_rel]
+
+    neg_rel, _ = find_peaks(-segment,
+                            prominence=neg_prominence,
+                            distance=neg_distance)
+    neg_peaks = [p + start for p in neg_rel]
+
+    if len(pos_peaks) and len(neg_peaks):
+        total = int((len(pos_peaks) + len(neg_peaks)) / 2)
+    else:
+        total = len(pos_peaks) + len(neg_peaks)
+
+    return pos_peaks, neg_peaks, total
+
+def compute_step_intervals(times, peaks):
+    peaks = sorted(peaks)
+
+    if len(peaks) < 2:
+        return [], None
+
+    intervals = [
+        times[peaks[i + 1]] - times[peaks[i]]
+        for i in range(len(peaks) - 1)
+    ]
+    avg = sum(intervals) / len(intervals)
+    return intervals, avg
+
+def plot_step_visualization(times, z, pos_peaks, neg_peaks,
+                            total_steps, distance_input):
+
+    all_peaks = sorted(pos_peaks + neg_peaks)
+
+    intervals, avg_interval = compute_step_intervals(times, all_peaks)
+
+    total_time = times[all_peaks[-1]] - times[all_peaks[0]] if len(all_peaks) > 1 else 0
+
+    x_positions = np.linspace(0, distance_input, len(all_peaks))
+
+    plt.figure(figsize=(14, 5), constrained_layout=True)
+
+    for i, peak in enumerate(all_peaks):
+        x = x_positions[i]
+        y = 0
+
+        if peak in pos_peaks:
+            plt.scatter(x, y, color="red", s=80)
+        else:
+            plt.scatter(x, y, color="blue", s=80)
+            
+        if i < len(intervals):
+            mid = (x_positions[i] + x_positions[i + 1]) / 2
+            plt.text(mid, 0.1, f"{intervals[i]:.2f}s",
+                     ha="center", fontsize=9)
+
+            x1 = x_positions[i]
+            x2 = x_positions[i+1]
+            plt.plot([x1, x2], [0,0], linewidth=2, color="black")
+
+            plt.plot([mid, mid], [0.09, 0], linewidth=1.8, color="black")
+
+    stats = (
+        f"Total Steps: {total_steps}\n"
+        f"Avg Interval: {avg_interval:.2f} s\n"
+        f"Total Time: {total_time:.2f} s\n"
+        f"Distance: {distance_input} m"
+    )
+
+    plt.text(distance_input * 0.70, 0.6,
+             stats,
+             fontsize=12,
+             bbox=dict(facecolor="white", alpha=0.85))
+
+    plt.title("Step Visualization Across Distance")
+    plt.xlabel("Distance (m)")
+    plt.ylabel("")
+    plt.ylim(-0.5, 1)
+    plt.grid(axis="x", linestyle="--", alpha=0.5)
+    plt.yticks([])
+    plt.show()
+
+def main_loop():
+    while True:
+        filename = choose_file()
+        if not filename:
+            break
+
+        ext = os.path.splitext(filename)[1].lower()
+        if ext == ".txt":
+            times, df = parse_wit_ble_txt(filename)
+        else:
+            times, df = read_csv_data(filename)
+
+        if df.empty:
+            print("No valid data.")
+            continue
+
+        z = df.iloc[:, 0]
+        z = (z - z.mean()) / z.std()
+
+        pos, neg, total_steps = find_steps_bidirectional(z)
+
+        root = tk.Tk()
+        root.withdraw()
+        distance = simpledialog.askfloat("Track Distance",
+                                         "Enter total track distance (meters):")
+        root.destroy()
+
+        if distance is None:
+            continue
+
+        plot_step_visualization(times, z, pos, neg,
+                                total_steps, distance)
+
+        again = input("Process another file? (y/n): ").lower()
+        if again != "y":
+            break
+
+
+if __name__ == "__main__":
+    main_loop()
+
